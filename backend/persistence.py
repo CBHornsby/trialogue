@@ -23,6 +23,12 @@ class RoleResult:
     output_tokens: int = 0
     status: str = "pending"  # pending | active | complete | error
     error_message: str = ""
+    # For the critic role specifically: criteria generated independently
+    # (from the question alone, before seeing the proposer's answer).
+    # Empty for proposer and judge roles.
+    criteria: str = ""
+    criteria_input_tokens: int = 0
+    criteria_output_tokens: int = 0
 
 
 @dataclass

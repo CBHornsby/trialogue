@@ -1,21 +1,26 @@
 # Trialogue
 
-A local desktop tool for asking questions to three frontier LLMs at once — one proposes an answer, one critiques it, one synthesizes the final result. Built for the kind of question where a single model's answer isn't quite enough.
+A local tool for running disciplined multi-model review on hard questions. One model proposes an answer, a second model independently establishes review criteria and critiques against them, and a third adjudicates and synthesizes a final answer.
+
+Built for technical power users — developers, analysts, researchers, technical writers — who already do this kind of review work manually across browser tabs and want to make it repeatable, auditable, and structured. Not aimed at casual chatbot use; for that, the native Claude.ai and ChatGPT interfaces are better.
 
 ## What it does
 
-Each question runs through three roles in sequence:
+Each question runs through these stages:
 
 1. **Proposer** drafts the initial answer
-2. **Critic** independently establishes what a correct answer needs, then reviews against those criteria with severity and confidence ratings
-3. **Judge** synthesizes both into a final answer, leading with the answer itself
+2. **Critic Criteria** generates review criteria from the question alone, before seeing the proposed answer (independent baseline)
+3. **Critic** reviews the proposed answer against those criteria with severity and confidence ratings
+4. **Judge** adjudicates each critic point (accept/reject/modify/uncertain), leads with the final answer, and surfaces remaining uncertainty in structured form
 
-You watch all three happen live, with each model's output streaming into its own panel. Token usage is shown per-role and total. If any role fails or is stopped, you can retry just that role without re-running the earlier ones.
+You watch the proposer, critic, and judge stream live in their own panels. The criteria-generation step runs in parallel with the proposer in the background, so it adds no perceived latency — the criteria are ready by the time the critic stage begins. Token usage is shown per-role and total. If any role fails or is stopped, you can retry just that role without re-running the earlier ones.
 
 ## What's new
 
-- **Calibrated critic**: independently lists correctness criteria before reviewing, reducing manufactured critiques
-- **Judge leads with the answer**: final answer first, then "what changed" and "remaining uncertainty"
+- **Truly independent critic criteria**: the criteria are generated from the question alone in a separate call, before the model sees the proposed answer — preventing the anchoring effect of inline criteria steps
+- **Calibrated critic**: severity and confidence ratings on each issue, with explicit "no significant issues" as a valid output
+- **Adjudicating judge**: each critic point is explicitly accepted, rejected, modified, or marked uncertain, with reasoning visible in the output
+- **Structured uncertainty**: judge output surfaces context gaps, version dependencies, definitions to confirm, and claims to verify before production use
 - **Terminal states**: clearly distinguishes complete, error, and stopped (no more misleading "complete" after a failure)
 - **Retry from a role**: re-run just the critic or judge without re-spending the proposer
 - **Token usage**: per-role and total token counts shown after each debate
@@ -42,9 +47,11 @@ You don't need all three keys — just the ones for the models you'll use. Defau
 5. Click "settings" in the top right and paste your API keys.
 6. Click "Save settings", go back to main, ask your first question.
 
-## Cost
+## Token usage
 
-Each debate uses roughly 5-15 cents of API credit depending on question complexity. The models are billed per token by their respective providers — there's no markup or middleman.
+Trialogue reports token usage per role and total after each debate completes. Actual API cost depends on your provider, model, account tier, and current pricing — Trialogue makes no assumption about pricing because providers change it. Tokens are stable; cost is a moving interpretation. Check your provider's current per-token pricing if you want to estimate cost.
+
+The criteria-independence step adds a small criteria-generation call before the main critic review, modestly increasing total tokens per debate compared to a single critic call. Because the criteria step runs in parallel with the proposer (both depend only on the question), it does not add latency — the criteria finish before the proposer does in most cases.
 
 ## Where things live
 

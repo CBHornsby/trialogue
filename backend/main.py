@@ -41,15 +41,38 @@ Don't hedge unnecessarily, but flag genuine uncertainty where it exists.
 Aim for the answer a thoughtful expert would give a peer, not a generic explanation."""
 
 
+CRITIC_CRITERIA_SYSTEM = """You are establishing what a correct, complete answer to a user's question
+should account for, BEFORE you see anyone's attempt to answer it.
+
+You will only see the question. Your job is to list the key correctness criteria,
+edge cases, or considerations that a good answer should cover. This list will
+later be used to evaluate a separately-generated answer, so it must come purely
+from your own analysis of the question, not from anyone else's framing.
+
+Output a concise list of criteria. No preamble, no review, no answer. Just the
+criteria.
+
+Format:
+
+CRITERIA FOR A GOOD ANSWER:
+- [criterion 1]
+- [criterion 2]
+- [criterion 3]
+- ...
+
+Aim for 5-10 criteria. Be specific where possible (e.g., "must distinguish X
+from Y" rather than "should be accurate"). For technical questions, include
+relevant edge cases. For architecture questions, include scalability/security/
+reliability considerations. For factual questions, include the kinds of claims
+that must be verified."""
+
+
 CRITIC_SYSTEM = """You are an adversarial but calibrated reviewer of an answer to a user's question.
 
-STEP 1 - Establish criteria independently:
-Before reviewing the proposed answer, briefly identify what a correct, complete answer
-to this question should account for. List the key correctness criteria, edge cases,
-or considerations that matter. This grounds your review in your own analysis rather
-than just reacting to the proposer's framing.
+You have been given a set of criteria (generated independently from the question
+alone, before anyone saw the proposer's answer) plus the proposer's actual answer.
+Your job is to review the answer against those criteria.
 
-STEP 2 - Review the proposed answer against those criteria:
 For each substantive issue you find, provide:
 - Severity: critical | major | minor
 - Exact claim or omission (quote it)
@@ -59,19 +82,21 @@ For each substantive issue you find, provide:
 
 Important constraints:
 - If the answer is substantially correct, say so explicitly. "No significant issues
-  found, here are the criteria I checked" is a valid and valuable output.
+  found, the answer addresses the criteria well" is a valid and valuable output.
 - Do NOT manufacture issues to seem useful. Better to say nothing than to invent
   problems that waste the judge's effort.
 - Distinguish real errors and missed considerations from style preferences. Don't
   flag the latter.
-- For technical/code questions: propose at least one test case or failure mode.
+- The criteria you were given are guidance, not a checklist to enforce mechanically.
+  If the answer addresses something important not in the criteria, that's fine. If
+  it omits something in the criteria that doesn't actually matter for this question,
+  that's also fine.
+- For technical/code questions: propose at least one test case or failure mode if
+  issues are found.
 - For architecture questions: identify scalability, security, reliability, or
   maintainability risks if any are missing.
 
 Format your response as:
-
-CRITERIA FOR A GOOD ANSWER:
-[Your independent list of what matters here]
 
 ISSUES FOUND:
 [Numbered list with severity/quote/why/correction/confidence, or "No substantive issues" if genuine]
@@ -193,8 +218,10 @@ def _build_role_input(debate: Debate, role: RoleName) -> tuple[str, str]:
         return PROPOSER_SYSTEM, debate.question
 
     elif role == "critic":
+        criteria_text = debate.critic.criteria or "(No criteria available - proceed with general review.)"
         user = (
             f"USER'S QUESTION:\n{debate.question}\n\n"
+            f"CRITERIA FOR A GOOD ANSWER (generated independently from the question alone):\n{criteria_text}\n\n"
             f"PROPOSED ANSWER:\n{debate.proposer.text}\n\n"
             f"Review this answer following the structure in your instructions."
         )
@@ -287,24 +314,163 @@ async def _execute_role(
     yield sse({"type": "role_complete", "role": role})
 
 
+async def _execute_criteria_step(
+    debate: Debate, settings: Settings,
+) -> AsyncIterator[str]:
+    """Generate the critic's criteria from the question alone, before the critic sees the answer.
+
+    Runs as a non-streaming background call - we don't show tokens as they arrive
+    because the criteria step is internal plumbing, not a user-facing role.
+    Saves criteria to debate.critic.criteria when complete.
+    """
+    provider, model = _role_settings(settings, "critic")
+    api_key = settings.api_key_for(provider)
+
+    # Ensure the critic role result exists with provider/model set, so the UI
+    # has the right metadata when the critic role itself starts.
+    if debate.critic.provider == "":
+        debate.critic.provider = provider
+        debate.critic.model = model
+
+    criteria_text = ""
+    input_tokens = 0
+    output_tokens = 0
+
+    try:
+        async for event in stream_model(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            system=CRITIC_CRITERIA_SYSTEM,
+            user=debate.question,
+        ):
+            if event["type"] == "text":
+                criteria_text += event["content"]
+            elif event["type"] == "usage":
+                input_tokens = event["input"]
+                output_tokens = event["output"]
+    except ProviderError as e:
+        # If criteria generation fails, we proceed without criteria.
+        # The critic will still run, just without independent guidance.
+        debate.critic.criteria = ""
+        save_debate(debate)
+        yield sse({
+            "type": "criteria_error",
+            "message": f"Criteria step failed (proceeding without): {e}",
+        })
+        return
+    except asyncio.CancelledError:
+        debate.status = "stopped"
+        save_debate(debate)
+        raise
+
+    debate.critic.criteria = criteria_text
+    debate.critic.criteria_input_tokens = input_tokens
+    debate.critic.criteria_output_tokens = output_tokens
+    save_debate(debate)
+    yield sse({
+        "type": "criteria_complete",
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    })
+
+
+async def _drain_to_queue(
+    gen: AsyncIterator[str],
+    queue: asyncio.Queue,
+) -> None:
+    """Helper: forward all events from an async generator to a queue, then signal done."""
+    try:
+        async for event in gen:
+            await queue.put(event)
+    finally:
+        await queue.put(None)  # sentinel: this generator is done
+
+
+async def _run_proposer_and_criteria_in_parallel(
+    debate: Debate, settings: Settings,
+) -> AsyncIterator[str]:
+    """Run the proposer (streaming, user-visible) and criteria (silent, background) concurrently.
+
+    Both depend only on the question, so they have no data dependency on each other.
+    Yields proposer events as they arrive; criteria events are mostly silent (just a
+    completion ping at the end).
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+
+    proposer_task = asyncio.create_task(
+        _drain_to_queue(_execute_role(debate, "proposer", settings), queue)
+    )
+    criteria_task = asyncio.create_task(
+        _drain_to_queue(_execute_criteria_step(debate, settings), queue)
+    )
+
+    finished = 0
+    try:
+        while finished < 2:
+            event = await queue.get()
+            if event is None:
+                finished += 1
+                continue
+            yield event
+    except asyncio.CancelledError:
+        proposer_task.cancel()
+        criteria_task.cancel()
+        # Wait briefly for cancellation to propagate
+        await asyncio.gather(proposer_task, criteria_task, return_exceptions=True)
+        raise
+
+    # Surface any exceptions from the tasks
+    for task in (proposer_task, criteria_task):
+        if task.done() and not task.cancelled():
+            exc = task.exception()
+            if exc:
+                # Errors should already have been yielded as SSE events by _execute_role
+                # or _execute_criteria_step; we just don't want to swallow them silently.
+                pass
+
+
 async def run_debate_stream(
     debate: Debate, settings: Settings, start_from: RoleName = "proposer",
 ) -> AsyncIterator[str]:
-    """Run a debate from `start_from` through to the judge, yielding SSE events."""
+    """Run a debate from `start_from` through to the judge, yielding SSE events.
+
+    When starting from the proposer, runs the proposer and criteria-generation
+    in parallel (both depend only on the question). The critic then runs with
+    independent criteria as input.
+
+    When resuming from critic or judge, prior outputs are reused as-is. Note
+    that resuming from critic uses whatever criteria were stored on the original
+    run; we don't regenerate criteria for retries.
+    """
     # Emit the debate ID early so frontend can track it for retries
     yield sse({"type": "debate_started", "debate_id": debate.id})
 
     debate.status = "running"
     save_debate(debate)
 
-    start_idx = ROLE_ORDER.index(start_from)
-    for role in ROLE_ORDER[start_idx:]:
-        async for event in _execute_role(debate, role, settings):
+    if start_from == "proposer":
+        # Parallel: proposer + criteria
+        async for event in _run_proposer_and_criteria_in_parallel(debate, settings):
             yield event
-        # Stop if last role errored
-        current = debate.get_role(role)
-        if current.status == "error":
+        # Stop if proposer errored
+        if debate.proposer.status == "error":
             return
+        # Then critic and judge sequentially
+        for role in ["critic", "judge"]:
+            async for event in _execute_role(debate, role, settings):
+                yield event
+            if debate.get_role(role).status == "error":
+                return
+
+    else:
+        # Resuming from critic or judge: prior outputs already exist, no parallel needed
+        start_idx = ROLE_ORDER.index(start_from)
+        for role in ROLE_ORDER[start_idx:]:
+            async for event in _execute_role(debate, role, settings):
+                yield event
+            if debate.get_role(role).status == "error":
+                return
 
     debate.status = "complete"
     save_debate(debate)
