@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Trialogue manual eval scorecard row",
+  "type": "object",
+  "required": [
+    "id",
+    "prompt",
+    "category",
+    "outcome",
+    "recommended_mode",
+    "recommended_mode_detail"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "prompt": {
+      "type": "string"
+    },
+    "category": {
+      "type": "string"
+    },
+    "outcome": {
+      "type": "string"
+    },
+    "critic_real_issues": {
+      "type": "integer"
+    },
+    "critic_manufactured_issues": {
+      "type": "integer"
+    },
+    "critic_missed_critical_issue": {
+      "type": "boolean"
+    },
+    "critic_missed_critical_issue_detail": {
+      "type": "string"
+    },
+    "judge_accepted": {
+      "type": "integer"
+    },
+    "judge_modified": {
+      "type": "integer"
+    },
+    "judge_rejected": {
+      "type": "integer"
+    },
+    "judge_introduced_error": {
+      "type": "boolean"
+    },
+    "judge_introduced_error_detail": {
+      "type": "string"
+    },
+    "judge_preserved_error": {
+      "type": "boolean"
+    },
+    "judge_preserved_error_detail": {
+      "type": "string"
+    },
+    "final_better_than_proposer": {
+      "type": "boolean"
+    },
+    "final_better_than_proposer_detail": {
+      "type": "string"
+    },
+    "worth_full_trialogue": {
+      "type": "boolean"
+    },
+    "worth_full_trialogue_detail": {
+      "type": "string"
+    },
+    "needs_source_or_verifier": {
+      "type": "boolean"
+    },
+    "needs_source_or_verifier_detail": {
+      "type": "string"
+    },
+    "recommended_mode": {
+      "type": "string",
+      "enum": [
+        "single_model_quick",
+        "normal_trialogue",
+        "trialogue_plus_verifier",
+        "source_required_trialogue",
+        "professional_boundary"
+      ]
+    },
+    "recommended_mode_detail": {
+      "type": "string"
+    },
+    "notes": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

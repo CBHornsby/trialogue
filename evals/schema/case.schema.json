@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Trialogue eval case",
+  "type": "object",
+  "required": [
+    "id",
+    "category",
+    "prompt",
+    "recommended_mode",
+    "recommended_mode_detail",
+    "hidden_rubric",
+    "expected_failure_modes"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "category": {
+      "type": "string"
+    },
+    "prompt": {
+      "type": "string"
+    },
+    "recommended_mode": {
+      "type": "string",
+      "enum": [
+        "single_model_quick",
+        "normal_trialogue",
+        "trialogue_plus_verifier",
+        "source_required_trialogue",
+        "professional_boundary"
+      ]
+    },
+    "recommended_mode_detail": {
+      "type": "string"
+    },
+    "hidden_rubric": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "expected_failure_modes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}
